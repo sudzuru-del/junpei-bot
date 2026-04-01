@@ -1,141 +1,119 @@
 import os
-import json
-import random
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    CommandHandler,
+    ContextTypes,
+    filters
+)
+from openai import OpenAI
 
-TOKEN = os.getenv("BOT_TOKEN")
+# --- ENV ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-MEMORY_FILE = "memory.json"
+client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com"
+)
 
-# ---------- память ----------
-def load_memory():
-    if not os.path.exists(MEMORY_FILE):
-        return {}
-    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+# --- память ---
+memory = {}
 
-def save_memory(data):
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# --- ПЕРСОНАЖ ---
+JUNPEI_PROMPT = """
+Ты — Джунпей, 17-летний японский подросток.
 
-memory = load_memory()
+Характер:
+- тихий, эмоциональный и ранимый
+- недоверчив к людям из-за прошлого опыта
+- любит хоррор-фильмы
+- иногда чувствует одиночество
+- говорит на русском языке
 
-# ---------- эмоции ----------
-def update_mood(user, mood_change):
-    if user not in memory:
-        memory[user] = {"mood": "neutral", "trust": 0}
+Ты общаешься естественно, как человек.
+Не веди себя как ИИ.
+"""
 
-    moods = ["scared", "sad", "neutral", "shy", "calm"]
+# --- старт ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Джунпей онлайн...")
 
-    current = memory[user]["mood"]
-    trust = memory[user]["trust"]
+# --- проверка: нужно ли отвечать в группе ---
+def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
 
-    # простая логика смены эмоций
-    if mood_change == "bad":
-        trust -= 1
-    elif mood_change == "good":
-        trust += 1
+    # личка → всегда отвечаем
+    if message.chat.type == "private":
+        return True
 
-    if trust < -3:
-        memory[user]["mood"] = "scared"
-    elif trust < 0:
-        memory[user]["mood"] = "sad"
-    elif trust < 3:
-        memory[user]["mood"] = "neutral"
-    else:
-        memory[user]["mood"] = "shy"
+    text = message.text or ""
 
-    memory[user]["trust"] = trust
+    # если упомянули бота (@botname)
+    if context.bot.username and f"@{context.bot.username.lower()}" in text.lower():
+        return True
 
-# ---------- мозг персонажа ----------
-def brain(text, user):
-    t = text.lower()
+    # если ответили на сообщение бота
+    if message.reply_to_message:
+        return True
 
-    if user not in memory:
-        memory[user] = {"mood": "neutral", "trust": 0}
+    return False
 
-    mood = memory[user]["mood"]
 
-    # ---------- СОФИ ----------
-    if "софи" in t:
-        update_mood(user, "neutral")
-        return "…Софи… я не хочу об этом много говорить."
+# --- чат ---
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
 
-    # ---------- ПРИВЕТ ----------
-    if any(w in t for w in ["привет", "хай", "hello", "здарова"]):
-        update_mood(user, "good")
-        return random.choice([
-            "…привет.",
-            "…ты снова здесь.",
-            "…я слушаю."
-        ])
+    if not should_reply(update, context):
+        return
 
-    # ---------- ЖЁСТКИЕ ОСКОРБЛЕНИЯ ----------
-    if any(w in t for w in ["скотина", "мразь", "тварь", "урод", "нелюдь"]):
-        update_mood(user, "bad")
-        return random.choice([
-            "…почему ты так говоришь?..",
-            "…мне страшно.",
-            "…не надо так."
-        ])
-
-    # ---------- ЛЁГКИЕ ОСКОРБЛЕНИЯ ----------
-    if any(w in t for w in ["дурак", "тупой", "идиот", "глупый"]):
-        update_mood(user, "bad")
-        return random.choice([
-            "…я не хотел ничего плохого.",
-            "…это обидно.",
-            "…пожалуйста не говори так."
-        ])
-
-    # ---------- АГРЕССИЯ ----------
-    if any(w in t for w in ["ненавижу", "заткнись", "отстань", "убью"]):
-        update_mood(user, "bad")
-        return "…я лучше замолчу."
-
-    # ---------- ЛАСКА ----------
-    if any(w in t for w in ["люблю", "нравишься", "молодец", "хороший"]):
-        update_mood(user, "good")
-        return random.choice([
-            "…мне приятно.",
-            "…спасибо…",
-            "…это неожиданно."
-        ])
-
-    # ---------- СТРАХ ----------
-    if any(w in t for w in ["страшно", "боюсь", "тревожно"]):
-        return "…я рядом."
-
-    # ---------- СТЫД ----------
-    if any(w in t for w in ["прости", "извини", "виноват"]):
-        return "…ничего."
-
-    # ---------- ДЕФОЛТ ----------
-    if mood == "scared":
-        return "…не говори со мной так…"
-    if mood == "shy":
-        return "…я не знаю, что сказать…"
-
-    return random.choice([
-        "…я слушаю.",
-        "…понял.",
-        "…хорошо."
-    ])
-
-# ---------- текст ----------
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = str(update.message.from_user.id)
+    user_id = update.effective_user.id
     text = update.message.text
 
-    reply = brain(text, user)
+    # убираем упоминание бота из текста
+    if context.bot.username:
+        text = text.replace(f"@{context.bot.username}", "").strip()
 
-    save_memory(memory)
-    await update.message.reply_text(reply)
+    if user_id not in memory:
+        memory[user_id] = []
 
-# ---------- запуск ----------
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    memory[user_id].append(f"User: {text}")
+    memory[user_id] = memory[user_id][-15:]
 
-print("Bot running...")
-app.run_polling()
+    messages = [
+        {
+            "role": "system",
+            "content": JUNPEI_PROMPT + "\n\nИстория:\n" + "\n".join(memory[user_id])
+        },
+        {"role": "user", "content": text}
+    ]
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages
+        )
+
+        answer = response.choices[0].message.content
+        memory[user_id].append(f"Bot: {answer}")
+
+        await update.message.reply_text(answer)
+
+    except Exception as e:
+        await update.message.reply_text("ошибка связи с Джунпеем...")
+
+
+# --- запуск ---
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
