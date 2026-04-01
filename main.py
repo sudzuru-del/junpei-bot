@@ -36,45 +36,52 @@ JUNPEI_PROMPT = """
 Не веди себя как ИИ.
 """
 
-# --- старт ---
+# --- START ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Джунпей онлайн...")
 
-# --- проверка: нужно ли отвечать в группе ---
-def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- проверка, нужно ли отвечать ---
+def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     message = update.message
 
-    # личка → всегда отвечаем
+    if not message:
+        return False
+
+    # личка
     if message.chat.type == "private":
         return True
 
     text = message.text or ""
 
-    # если упомянули бота (@botname)
-    if context.bot.username and f"@{context.bot.username.lower()}" in text.lower():
-        return True
+    bot_username = context.bot.username
+    if bot_username:
+        bot_tag = f"@{bot_username}".lower()
+        if bot_tag in text.lower():
+            return True
 
-    # если ответили на сообщение бота
-    if message.reply_to_message:
-        return True
+    # ответ на сообщение бота
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id == context.bot.id:
+            return True
 
     return False
 
-
-# --- чат ---
+# --- CHAT ---
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    message = update.message
+
+    if not message or not message.text:
         return
 
     if not should_reply(update, context):
         return
 
     user_id = update.effective_user.id
-    text = update.message.text
+    text = message.text
 
-    # убираем упоминание бота из текста
-    if context.bot.username:
-        text = text.replace(f"@{context.bot.username}", "").strip()
+    bot_username = context.bot.username
+    if bot_username:
+        text = text.replace(f"@{bot_username}", "").strip()
 
     if user_id not in memory:
         memory[user_id] = []
@@ -99,21 +106,21 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = response.choices[0].message.content
         memory[user_id].append(f"Bot: {answer}")
 
-        await update.message.reply_text(answer)
+        await message.reply_text(answer)
 
     except Exception as e:
-        await update.message.reply_text("ошибка связи с Джунпеем...")
+        print("ERROR:", e)
+        await message.reply_text("ошибка связи с Джунпеем...")
 
-
-# --- запуск ---
+# --- MAIN ---
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
+    print("Bot is running...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
