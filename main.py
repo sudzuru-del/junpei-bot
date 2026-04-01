@@ -1,12 +1,5 @@
 import os
-from telegram import Update
-from telegram.ext import (
-    Application,
-    MessageHandler,
-    CommandHandler,
-    ContextTypes,
-    filters
-)
+from telegram.ext import Updater, MessageHandler, Filters, CommandHandler
 from openai import OpenAI
 
 # --- ENV ---
@@ -21,79 +14,65 @@ client = OpenAI(
 # --- память ---
 memory = {}
 
-# --- ПЕРСОНАЖ ---
+# --- персонаж ---
 JUNPEI_PROMPT = """
 Ты — Джунпей, 17-летний японский подросток.
 
 Характер:
 - тихий, эмоциональный и ранимый
-- недоверчив к людям из-за прошлого опыта
-- любит хоррор-фильмы
-- иногда чувствует одиночество
-- говорит на русском языке
+- не доверяет людям
+- любит хоррор
+- говорит на русском
 
-Ты общаешься естественно, как человек.
-Не веди себя как ИИ.
+Отвечай как живой человек.
 """
 
-# --- START ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Джунпей онлайн...")
+# --- команды ---
+def start(update, context):
+    update.message.reply_text("...я здесь")
 
-# --- проверка, нужно ли отвечать ---
-def should_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    message = update.message
-
-    if not message:
-        return False
+# --- проверка для групп ---
+def should_reply(update, context):
+    chat_type = update.message.chat.type
+    text = update.message.text or ""
 
     # личка
-    if message.chat.type == "private":
+    if chat_type == "private":
         return True
 
-    text = message.text or ""
+    # упоминание
+    if context.bot.username.lower() in text.lower():
+        return True
 
-    bot_username = context.bot.username
-    if bot_username:
-        bot_tag = f"@{bot_username}".lower()
-        if bot_tag in text.lower():
-            return True
-
-    # ответ на сообщение бота
-    if message.reply_to_message and message.reply_to_message.from_user:
-        if message.reply_to_message.from_user.id == context.bot.id:
+    # ответ на бота
+    if update.message.reply_to_message:
+        if update.message.reply_to_message.from_user.id == context.bot.id:
             return True
 
     return False
 
-# --- CHAT ---
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-
-    if not message or not message.text:
+# --- чат ---
+def chat(update, context):
+    if not update.message or not update.message.text:
         return
 
     if not should_reply(update, context):
         return
 
-    user_id = update.effective_user.id
-    text = message.text
+    user_id = update.message.from_user.id
+    text = update.message.text
 
-    bot_username = context.bot.username
-    if bot_username:
-        text = text.replace(f"@{bot_username}", "").strip()
+    if context.bot.username:
+        text = text.replace(context.bot.username, "").strip()
 
     if user_id not in memory:
         memory[user_id] = []
 
     memory[user_id].append(f"User: {text}")
-    memory[user_id] = memory[user_id][-15:]
+    memory[user_id] = memory[user_id][-10:]
 
     messages = [
-        {
-            "role": "system",
-            "content": JUNPEI_PROMPT + "\n\nИстория:\n" + "\n".join(memory[user_id])
-        },
+        {"role": "system", "content": JUNPEI_PROMPT + "\n" + "\n".join(memory[user_id])},
         {"role": "user", "content": text}
     ]
 
@@ -106,21 +85,23 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         answer = response.choices[0].message.content
         memory[user_id].append(f"Bot: {answer}")
 
-        await message.reply_text(answer)
+        update.message.reply_text(answer)
 
     except Exception as e:
-        print("ERROR:", e)
-        await message.reply_text("ошибка связи с Джунпеем...")
+        print(e)
+        update.message.reply_text("...не получилось ответить")
 
-# --- MAIN ---
+# --- запуск ---
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, chat))
 
-    print("Bot is running...")
-    app.run_polling()
+    print("Bot started...")
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
