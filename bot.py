@@ -1,13 +1,10 @@
 import os
 import json
-import requests
+import random
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
-HF_API = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
-
-HEADERS = {}
 
 MEMORY_FILE = "memory.json"
 
@@ -24,70 +21,116 @@ def save_memory(data):
 
 memory = load_memory()
 
-# ---------- локальный характер ----------
-def local_brain(text, mood):
+# ---------- эмоции ----------
+def update_mood(user, mood_change):
+    if user not in memory:
+        memory[user] = {"mood": "neutral", "trust": 0}
+
+    moods = ["scared", "sad", "neutral", "shy", "calm"]
+
+    current = memory[user]["mood"]
+    trust = memory[user]["trust"]
+
+    # простая логика смены эмоций
+    if mood_change == "bad":
+        trust -= 1
+    elif mood_change == "good":
+        trust += 1
+
+    if trust < -3:
+        memory[user]["mood"] = "scared"
+    elif trust < 0:
+        memory[user]["mood"] = "sad"
+    elif trust < 3:
+        memory[user]["mood"] = "neutral"
+    else:
+        memory[user]["mood"] = "shy"
+
+    memory[user]["trust"] = trust
+
+# ---------- мозг персонажа ----------
+def brain(text, user):
     t = text.lower()
 
+    if user not in memory:
+        memory[user] = {"mood": "neutral", "trust": 0}
+
+    mood = memory[user]["mood"]
+
+    # ---------- СОФИ ----------
     if "софи" in t:
-        return "…Софи важна для меня. Я не хочу это обсуждать."
+        update_mood(user, "neutral")
+        return "…Софи… я не хочу об этом много говорить."
 
-    if any(w in t for w in ["дурак", "ненавижу"]):
-        return "…мне страшно… не говори так."
+    # ---------- ПРИВЕТ ----------
+    if any(w in t for w in ["привет", "хай", "hello", "здарова"]):
+        update_mood(user, "good")
+        return random.choice([
+            "…привет.",
+            "…ты снова здесь.",
+            "…я слушаю."
+        ])
 
-    if any(w in t for w in ["привет", "хай", "hello"]):
-        return "…привет…"
+    # ---------- ЖЁСТКИЕ ОСКОРБЛЕНИЯ ----------
+    if any(w in t for w in ["скотина", "мразь", "тварь", "урод", "нелюдь"]):
+        update_mood(user, "bad")
+        return random.choice([
+            "…почему ты так говоришь?..",
+            "…мне страшно.",
+            "…не надо так."
+        ])
 
+    # ---------- ЛЁГКИЕ ОСКОРБЛЕНИЯ ----------
+    if any(w in t for w in ["дурак", "тупой", "идиот", "глупый"]):
+        update_mood(user, "bad")
+        return random.choice([
+            "…я не хотел ничего плохого.",
+            "…это обидно.",
+            "…пожалуйста не говори так."
+        ])
+
+    # ---------- АГРЕССИЯ ----------
+    if any(w in t for w in ["ненавижу", "заткнись", "отстань", "убью"]):
+        update_mood(user, "bad")
+        return "…я лучше замолчу."
+
+    # ---------- ЛАСКА ----------
+    if any(w in t for w in ["люблю", "нравишься", "молодец", "хороший"]):
+        update_mood(user, "good")
+        return random.choice([
+            "…мне приятно.",
+            "…спасибо…",
+            "…это неожиданно."
+        ])
+
+    # ---------- СТРАХ ----------
+    if any(w in t for w in ["страшно", "боюсь", "тревожно"]):
+        return "…я рядом."
+
+    # ---------- СТЫД ----------
+    if any(w in t for w in ["прости", "извини", "виноват"]):
+        return "…ничего."
+
+    # ---------- ДЕФОЛТ ----------
+    if mood == "scared":
+        return "…не говори со мной так…"
     if mood == "shy":
         return "…я не знаю, что сказать…"
 
-    return None
+    return random.choice([
+        "…я слушаю.",
+        "…понял.",
+        "…хорошо."
+    ])
 
-# ---------- бесплатный ИИ ----------
-def hf_generate(text):
-    try:
-        r = requests.post(
-            HF_API,
-            headers=HEADERS,
-            json={"inputs": text},
-            timeout=10
-        )
-        data = r.json()
-
-        if isinstance(data, list) and "generated_text" in data[0]:
-            return data[0]["generated_text"]
-
-    except:
-        pass
-
-    return None
-
-# ---------- ответ ----------
-def get_reply(text, user_id):
-    if user_id not in memory:
-        memory[user_id] = {"mood": "neutral"}
-
-    mood = memory[user_id]["mood"]
-
-    # 1. локальный мозг
-    local = local_brain(text, mood)
-    if local:
-        return local
-
-    # 2. бесплатный AI
-    ai = hf_generate(text)
-    if ai:
-        return ai[:300]
-
-    # 3. fallback
-    return "…я думаю об этом."
-
-# ---------- обработка ----------
+# ---------- текст ----------
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
+    user = str(update.message.from_user.id)
     text = update.message.text
 
-    reply = get_reply(text, user_id)
+    reply = brain(text, user)
 
+    save_memory(memory)
     await update.message.reply_text(reply)
 
 # ---------- запуск ----------
