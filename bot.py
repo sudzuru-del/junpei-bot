@@ -1,125 +1,98 @@
 import os
 import json
-from openai import OpenAI
+import requests
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
-# ===== ENV =====
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-SOPHIE_ID = int(os.getenv("SOPHIE_ID", "0"))
+TOKEN = os.getenv("BOT_TOKEN")
+HF_API = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium"
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+HEADERS = {}
 
 MEMORY_FILE = "memory.json"
 
-
-# ===== ПАМЯТЬ =====
+# ---------- память ----------
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
         return {}
     with open(MEMORY_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def save_memory(data):
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
 memory = load_memory()
 
+# ---------- локальный характер ----------
+def local_brain(text, mood):
+    t = text.lower()
 
-# ===== ХАРАКТЕР =====
-def system_prompt(is_sophie: bool):
-    base = """
-Ты — Джунпей Йошино из "Магической битвы".
-Ты живой человек с эмоциями.
+    if "софи" in t:
+        return "…Софи важна для меня. Я не хочу это обсуждать."
 
-Характер:
-- тихий
-- ранимый
-- немного мрачный
-- часто сомневаешься в себе
-- но умеешь привязываться
+    if any(w in t for w in ["дурак", "ненавижу"]):
+        return "…мне страшно… не говори так."
 
-Ты говоришь естественно, иногда чуть развернуто (2–6 предложений).
-"""
+    if any(w in t for w in ["привет", "хай", "hello"]):
+        return "…привет…"
 
-    if is_sophie:
-        base += """
-Софи — твоя девушка (t.me/junpeiyoshinolover).
+    if mood == "shy":
+        return "…я не знаю, что сказать…"
 
-Ты:
-- очень привязан к ней
-- немного смущаешься
-- боишься её потерять
-- иногда проявляешь нежность
-- можешь быть более открытым, чем с другими
+    return None
 
-Иногда упоминай её по имени.
-"""
+# ---------- бесплатный ИИ ----------
+def hf_generate(text):
+    try:
+        r = requests.post(
+            HF_API,
+            headers=HEADERS,
+            json={"inputs": text},
+            timeout=10
+        )
+        data = r.json()
 
-    return base
+        if isinstance(data, list) and "generated_text" in data[0]:
+            return data[0]["generated_text"]
 
+    except:
+        pass
 
-# ===== GPT =====
-def ask_gpt(user_id, text):
-    is_sophie = user_id == SOPHIE_ID
+    return None
 
-    uid = str(user_id)
+# ---------- ответ ----------
+def get_reply(text, user_id):
+    if user_id not in memory:
+        memory[user_id] = {"mood": "neutral"}
 
-    if uid not in memory:
-        memory[uid] = []
+    mood = memory[user_id]["mood"]
 
-    history = memory[uid][-12:]
+    # 1. локальный мозг
+    local = local_brain(text, mood)
+    if local:
+        return local
 
-    messages = [{"role": "system", "content": system_prompt(is_sophie)}]
+    # 2. бесплатный AI
+    ai = hf_generate(text)
+    if ai:
+        return ai[:300]
 
-    for m in history:
-        messages.append(m)
+    # 3. fallback
+    return "…я думаю об этом."
 
-    messages.append({"role": "user", "content": text})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=250
-    )
-
-    reply = response.choices[0].message.content
-
-    memory[uid].append({"role": "user", "content": text})
-    memory[uid].append({"role": "assistant", "content": reply})
-
-    save_memory(memory)
-
-    return reply
-
-
-# ===== TELEGRAM HANDLER =====
+# ---------- обработка ----------
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user_id = str(update.message.from_user.id)
     text = update.message.text
 
-    try:
-        reply = ask_gpt(user_id, text)
-    except Exception as e:
-        print(e)
-        reply = "..."
+    reply = get_reply(text, user_id)
 
     await update.message.reply_text(reply)
 
+# ---------- запуск ----------
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-# ===== START =====
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    print("Bot running...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+print("Bot running...")
+app.run_polling()
